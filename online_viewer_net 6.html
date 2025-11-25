@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BRM5 TAKTISCHER SZENARIO-PLANER</title>
+    <!-- Lade Tailwind CSS über CDN für schnelles, mobiles responsives Styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Angepasster Stil, um den minimalistischen Konsolen-Look zu erzielen */
+        body {
+            background-color: #0c0e12; /* Sehr dunkler Hintergrund */
+            font-family: 'Inter', monospace;
+        }
+        .container-main {
+            max-width: 900px;
+        }
+        /* Styling für die Missionskarten: Schatteneffekt für taktischen Look */
+        .mission-card {
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2), 0 2px 4px -2px rgba(0, 0, 0, 0.2);
+            transition: background-color 0.3s, box-shadow 0.3s;
+        }
+        .mission-card:hover {
+            background-color: #1f2937; /* Leichte Hervorhebung beim Hover */
+        }
+        /* Spezielles Styling für Eingabefelder */
+        .input-field, .select-field, .textarea-field {
+            border-radius: 2px;
+            font-size: 0.9rem;
+            padding: 0.6rem;
+            /* Einheitliche Farbe für alle Felder */
+            border-color: #374151; /* gray-700 */
+            background-color: #1f2937; /* gray-800 */
+            color: #d1d5db; /* gray-300 */
+        }
+        .input-field:focus, .select-field:focus, .textarea-field:focus {
+            outline: none;
+            border-color: #10b981; /* Grüner Fokus-Akzent (emerald-500) */
+            box-shadow: 0 0 0 1px #10b981;
+        }
+    </style>
+    <!-- Lucide Icons für Icons -->
+    <script type="module">
+      import { Search, Plus, List, Save, Trash2, Edit, Loader2, ArrowLeft, Users, LogIn, LogOut, CloudOff, Star, X } from 'https://cdn.skypack.dev/lucide@latest';
+      window.icons = { Plus, List, Save, Trash2, Edit, Loader2, ArrowLeft, Users, LogIn, LogOut, CloudOff, Star, X };
+    </script>
+
+    <!-- Firebase SDKs für Auth (UID-Generierung) -->
+    <!-- Obwohl die App "stand-alone" ist (im Sinne von keinem Server-Backend), verwenden wir die Firebase-Module für die bereitgestellte Authentifizierung (UUID-Generierung), um die ursprüngliche Struktur beizubehalten. -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        
+        window.firebase = {
+            initializeApp,
+            getAuth,
+            signInAnonymously,
+            signOut
+        };
+    </script>
+</head>
+<body class="bg-gray-950 text-gray-300 min-h-screen">
+
+    <div id="app" class="container-main mx-auto p-4 md:p-8">
+        <!-- Der gesamte App-Inhalt wird hier von JavaScript gerendert -->
+    </div>
+
+    <script>
+        // --- Globale Variablen und Konfiguration ---
+        const LOCAL_STORAGE_KEY = 'brm5_mission_data_v1';
+        let view = 'loading'; 
+        let missions = [];
+        let currentMission = null;
+        let auth = null;
+        let userId = null;
+        let platoonRole = null;
+        let isAuthReady = false;
+        
+        // --- Firebase Initialisierung und Auth-Fallbacks ---
+        // Die globalen Variablen __app_id und __firebase_config werden in der Canvas-Umgebung bereitgestellt.
+        // Sie sind hier für die Standalone-Funktionalität als leere Objekte/Default-Werte definiert, um Fehler zu vermeiden.
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        // Wir können die Firebase-Konfiguration hier nicht direkt bereitstellen, da sie von der Umgebung kommt. 
+        // Für eine echte Standalone-App müssten hier Ihre eigenen Firebase-Keys stehen.
+        // Da die Logik stark auf Mock-Accounts basiert und die Daten lokal speichert, lassen wir die Config leer.
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {}; 
+
+        // Mock-Konten für die Anmeldung, um verschiedene Rollen zu simulieren
+        const MOCK_ACCOUNTS = {
+            'TestR': { password: '123aFd', platoon: 'RDPL', name: 'Red Platoon Leader' },
+            'TestG': { password: '123GreeN', platoon: 'GRPL', name: 'Green Platoon Leader' },
+            'TestB': { password: '123BLOE', platoon: 'BLPL', name: 'Blue Platoon Leader' },
+            'TestLtR': { password: 'LtRPass', platoon: 'LTPR', name: 'Red Lieutenant' },
+            'TestLtG': { password: 'LtGPass', platoon: 'LTPG', name: 'Green Lieutenant' },
+            'TestLtB': { password: 'LtBPass', platoon: 'LTPB', name: 'Blue Lieutenant' },
+        };
+
+        const LIEUTENANT_ROLES = ['LTPR', 'LTPG', 'LTPB'];
+        const FULL_VISIBILITY_ROLES = ['RDPL', ...LIEUTENANT_ROLES]; // Commander und Lieutenants sehen alles
+
+        const SCENARIO_TYPES = [
+            { value: 'RESCUE', label: 'Rescue Operation (RESCUE)' },
+            { value: 'ASSAULT', label: 'Assault (ASSAULT)' },
+            { value: 'RECON', label: 'Reconnaissance (RECON)' },
+            { value: 'DEFENSE', label: 'Defense (DEFENSE)' },
+            { value: 'CUSTOM', label: 'Custom (CUSTOM)' },
+        ];
+
+        const PLATOON_OPTIONS = [
+            { value: 'GENERAL', label: 'General / All Platoons' },
+            { value: 'RDPL', label: 'Red Platoon (RDPL)' },
+            { value: 'GRPL', label: 'Green Platoon (GRPL)' },
+            { value: 'BLPL', label: 'Blue Platoon (BLPL)' },
+            { value: 'LTPR', label: 'Red Lieutenant (LTPR)', hidden: true }, // Versteckte Rollen, die man nur zuweisen kann, wenn man volle Sicht hat
+            { value: 'LTPG', label: 'Green Lieutenant (LTPG)', hidden: true },
+            { value: 'LTPB', label: 'Blue Lieutenant (LTPB)', hidden: true },
+        ];
+        
+        const initialMissionState = {
+            id: undefined, 
+            title: '',
+            scenarioType: 'RESCUE',
+            assignedPlatoon: 'GENERAL',
+            objective: '',
+            description: '',
+            assets: '',
+        };
+
+        // --- HILFSFUNKTIONEN ---
+
+        function loadMissionsFromLocal() {
+            // Lädt Missionen aus localStorage
+            try {
+                const missionsJson = localStorage.getItem(LOCAL_STORAGE_KEY);
+                return missionsJson ? JSON.parse(missionsJson) : [];
+            } catch (e) {
+                console.error("Fehler beim Laden der Missionen aus dem lokalen Speicher:", e);
+                return [];
+            }
+        }
+
+        function saveMissionsToLocal(missionsData) {
+            // Speichert Missionen in localStorage
+            try {
+                localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(missionsData));
+            } catch (e) {
+                console.error("Fehler beim Speichern der Missionen im lokalen Speicher:", e);
+            }
+        }
+
+        function canAssignTo(userPlatoon, targetPlatoon) {
+            // Prüft, ob der angemeldete Benutzer die Berechtigung hat, eine Mission einem bestimmten Trupp zuzuweisen.
+            if (FULL_VISIBILITY_ROLES.includes(userPlatoon)) return true;
+            if (targetPlatoon === 'GENERAL') return true;
+            
+            // Beispielhafte Regeln für Truppführer: Kann seinem Trupp oder dem anderen Trupp zuweisen
+            if (userPlatoon === 'GRPL') return targetPlatoon === 'GRPL' || targetPlatoon === 'BLPL';
+            if (userPlatoon === 'BLPL') return targetPlatoon === 'BLPL' || targetPlatoon === 'GRPL'; 
+            return false;
+        }
+
+        function canEditOrDelete(mission) {
+            // Prüft, ob der Benutzer die Berechtigung zum Bearbeiten oder Löschen hat.
+            if (!userId) return false;
+            // Commander (RDPL) kann alles. Ersteller kann seine eigenen Missionen bearbeiten.
+            if (platoonRole === 'RDPL') return true;
+            return mission.creatorId === userId;
+        }
+
+        function getPlatoonStyles(platoon) {
+            // Liefert CSS-Klassen basierend auf der Truppenzugehörigkeit für farbliche Akzente.
+            switch (platoon) {
+                case 'RDPL': 
+                    return { text: 'text-red-500', border: 'border-l-4 border-red-600', badge: 'bg-red-900/50 text-red-300 border border-red-700' };
+                case 'GRPL': 
+                    return { text: 'text-green-500', border: 'border-l-4 border-green-600', badge: 'bg-green-900/50 text-green-300 border border-green-700' };
+                case 'BLPL': 
+                    return { text: 'text-blue-500', border: 'border-l-4 border-blue-600', badge: 'bg-blue-900/50 text-blue-300 border border-blue-700' };
+                case 'LTPR': 
+                case 'LTPG': 
+                case 'LTPB': 
+                    return { text: 'text-yellow-500', border: 'border-l-4 border-yellow-600', badge: 'bg-yellow-900/50 text-yellow-300 border border-yellow-700' };
+                case 'GENERAL':
+                default: 
+                    return { text: 'text-gray-500', border: 'border-l-4 border-gray-600', badge: 'bg-gray-700/50 text-gray-400 border border-gray-600' };
+            }
+        }
+        
+        // --- UI Komponenten (als HTML-Strings) ---
+
+        function getIconHtml(iconName, className = '') {
+            // Generiert das SVG-Icon von Lucide
+            const Icon = window.icons[iconName];
+            if (Icon) {
+                const svgContent = Icon.contents;
+                // Reduziert die Größe des viewBox für bessere Skalierung
+                return `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${className}">${svgContent}</svg>`;
+            }
+            return '';
+        }
+
+        function renderHeader(title, iconName) {
+            const iconHtml = getIconHtml(iconName, 'w-6 h-6 mr-3 text-red-500');
+            return `
+                <h2 class="text-2xl font-bold mb-6 flex items-center text-gray-300 tracking-wider font-mono border-b border-gray-800 pb-2">
+                    ${iconHtml}
+                    ${title}
+                </h2>
+            `;
+        }
+        
+        function renderButton(text, iconName, className = '', disabled = false, dataAction = '', dataId = '') {
+            const iconHtml = getIconHtml(iconName, 'w-4 h-4 mr-2');
+            const disabledAttr = disabled ? 'disabled' : '';
+            
+            // Standardstil für Buttons
+            const defaultClass = 'px-4 py-2 rounded-sm font-semibold transition duration-200 font-mono text-sm tracking-wider flex items-center justify-center whitespace-nowrap';
+            const styleClass = disabled 
+                ? 'bg-gray-700 text-gray-500 cursor-not-allowed border border-gray-600' 
+                : 'bg-green-700 hover:bg-green-600 text-white border border-green-500';
+
+            return `
+                <button 
+                    type="button" 
+                    class="${defaultClass} ${styleClass} ${className}"
+                    data-action="${dataAction}"
+                    data-id="${dataId}"
+                    ${disabledAttr}
+                >
+                    ${iconName ? iconHtml : ''}
+                    ${text}
+                </button>
+            `;
+        }
+
+        // --- RENDER ANSICHTEN ---
+        
+        function renderLoading() {
+            const appDiv = document.getElementById('app');
+            appDiv.innerHTML = `
+                <div class="min-h-screen bg-gray-950 flex justify-center items-center text-gray-400 font-mono text-lg">
+                    ${getIconHtml('Loader2', 'w-8 h-8 animate-spin mr-3 text-red-500')} SYSTEMSTART...
+                </div>
+            `;
+        }
+
+        function renderLogin() {
+            const appDiv = document.getElementById('app');
+            appDiv.innerHTML = `
+                <div class="flex justify-center items-center h-[calc(100vh-8rem)] p-4">
+                    <div class="w-full max-w-sm bg-gray-900 p-8 rounded-sm shadow-xl border border-gray-800">
+                        ${renderHeader("ZUGRIFFSPROTOKOLL", "LogIn")}
+                        
+                        <div id="login-message" class="hidden p-3 mb-4 rounded-sm text-sm font-mono font-medium"></div>
+
+                        <form id="login-form">
+                            ${renderInputField("BENUTZERNAME", "username", "Rolle/Trupp ID", "text", true)}
+                            ${renderInputField("PASSWORT", "password", "Verschlüsselter Schlüssel", "password", true)}
+                            <button type="submit" id="login-button" class="px-4 py-2 rounded-sm font-semibold transition duration-200 font-mono text-sm tracking-wider flex items-center justify-center w-full mt-4 bg-green-700 hover:bg-green-600 text-white border border-green-500">
+                                ${getIconHtml('LogIn', 'w-4 h-4 mr-2')} LOGIN BESTÄTIGEN
+                            </button>
+                        </form>
+
+                        <div class="mt-6 pt-4 border-t border-gray-800 text-xs text-gray-500 font-mono">
+                            <p class="font-semibold mb-1 text-gray-400">VERFÜGBARE TEST-ROLLEN:</p>
+                            <ul class="list-disc list-inside ml-2 space-y-0.5">
+                                <li class="text-red-500">TestR (Commander / RDPL)</li>
+                                <li class="text-yellow-500">TestLtR (Lieutenant / LTPR)</li>
+                                <li class="text-green-500">TestG (Truppführer / GRPL)</li>
+                                <li class="text-blue-500">TestB (Truppführer / BLPL)</li>
+                            </ul>
+                            <p class="mt-4 text-yellow-500 flex items-center">
+                                ${getIconHtml('CloudOff', 'w-4 h-4 mr-1')}
+                                WARNUNG: LOKALER SPEICHERMODUS.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            `;
+            // Listener für Login-Formular hinzufügen
+            document.getElementById('login-form').addEventListener('submit', handleLogin);
+        }
+
+        function renderInputField(label, name, placeholder, type = 'text', required = false, isTextarea = false, value = '') {
+            const requiredAttr = required ? 'required' : '';
+            
+            // Sichert den Zugriff auf currentMission ab, falls es null ist (z.B. im Login-Formular)
+            const missionData = currentMission || {};
+            const valueAttr = value || missionData[name] || '';
+
+            const labelHtml = `
+                <label for="${name}" class="block text-gray-500 text-sm font-semibold mb-1 font-mono">
+                    ${label} ${required ? '<span class="text-red-500">*</span>' : ''}
+                </label>
+            `;
+            
+            let inputHtml;
+            if (isTextarea) {
+                inputHtml = `
+                    <textarea 
+                        name="${name}" id="${name}" 
+                        class="textarea-field w-full"
+                        placeholder="${placeholder}" rows="4" ${requiredAttr}>${valueAttr}</textarea>
+                `;
+            } else {
+                inputHtml = `
+                    <input 
+                        type="${type}" name="${name}" id="${name}" 
+                        class="input-field w-full"
+                        placeholder="${placeholder}" value="${valueAttr}" ${requiredAttr}>
+                `;
+            }
+
+            return `<div class="mb-4">${labelHtml}${inputHtml}</div>`;
+        }
+
+        function renderSelectField(label, name, options, required = false, disabled = false) {
+            const requiredAttr = required ? 'required' : '';
+            const disabledAttr = disabled ? 'disabled' : '';
+            // Da currentMission bei Login null sein kann, stellen wir sicher, dass wir einen Fallback haben
+            const currentValue = currentMission ? currentMission[name] : options.length > 0 ? options[0].value : '';
+
+            const optionsHtml = options.map(option => `
+                <option value="${option.value}" ${option.value === currentValue ? 'selected' : ''} ${option.disabled ? 'disabled' : ''} class="bg-gray-800 text-gray-300">
+                    ${option.label} ${option.disabled ? '(Keine Berechtigung)' : ''}
+                </option>
+            `).join('');
+
+            return `
+                <div class="mb-4">
+                    <label for="${name}" class="block text-gray-500 text-sm font-semibold mb-1 font-mono">
+                        ${label} ${required ? '<span class="text-red-500">*</span>' : ''}
+                    </label>
+                    <select
+                        name="${name}" id="${name}"
+                        class="select-field w-full ${disabled ? 'opacity-60 cursor-not-allowed' : ''}"
+                        ${requiredAttr} ${disabledAttr}
+                    >
+                        ${optionsHtml}
+                    </select>
+                </div>
+            `;
+        }
+        
+        function renderCreator() {
+            const appDiv = document.getElementById('app');
+            const isEditing = currentMission && currentMission.id !== undefined;
+
+            const headerTitle = isEditing ? "MISSION: DATEN-EDITIERUNG" : "MISSION: NEUEINSATZ-ANLAGE";
+            const headerIcon = isEditing ? "Edit" : "Plus";
+
+            // Berechtigte Truppoptionen filtern
+            let availablePlatoonOptions = PLATOON_OPTIONS.filter(o => !o.hidden).map(option => ({
+                ...option,
+                disabled: !canAssignTo(platoonRole, option.value)
+            }));
+            
+            // Wenn im Bearbeitungsmodus und der aktuell zugewiesene Trupp aus einem Grund nicht in der Liste ist (z.B. versteckte Rolle), ihn hinzufügen (aber nicht zwingend bearbeitbar machen)
+            const currentAssignedPlatoon = currentMission.assignedPlatoon;
+            const isCurrentPlatoonHidden = PLATOON_OPTIONS.find(o => o.value === currentAssignedPlatoon)?.hidden;
+            if (isEditing && isCurrentPlatoonHidden && !availablePlatoonOptions.find(o => o.value === currentAssignedPlatoon)) {
+                 availablePlatoonOptions.push({
+                     value: currentAssignedPlatoon,
+                     label: PLATOON_OPTIONS.find(o => o.value === currentAssignedPlatoon)?.label + ' (Aktuell zugewiesen)',
+                     disabled: !canAssignTo(platoonRole, currentAssignedPlatoon), 
+                 });
+            }
+
+            // Sortiere die Optionen, damit die aktuell zugewiesene (falls hinzugefügt) nicht an erster Stelle steht
+            availablePlatoonOptions.sort((a, b) => {
+                if (a.value === currentAssignedPlatoon && !isEditing) return -1;
+                if (b.value === currentAssignedPlatoon && !isEditing) return 1;
+                if (a.value === 'GENERAL') return -1;
+                if (b.value === 'GENERAL') return 1;
+                return a.value.localeCompare(b.value);
+            });
+
+
+            appDiv.innerHTML = `
+                <div class="p-6 bg-gray-950 min-h-full">
+                    ${renderHeader(headerTitle, headerIcon)}
+
+                    <form id="mission-form" class="bg-gray-900 p-6 rounded-sm border border-gray-800 shadow-lg">
+                        <div id="creator-message" class="hidden p-3 mb-4 rounded-sm text-sm font-mono font-medium"></div>
+
+                        ${renderInputField("MISSONSTITEL", "title", "OPERATION: RED DRAGON", "text", true)}
+
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            ${renderSelectField("SZENARIO-TYP", "scenarioType", SCENARIO_TYPES, true)}
+                            ${renderSelectField("ZUGEWIESENER TRUPP", "assignedPlatoon", availablePlatoonOptions, true)}
+                        </div>
+
+                        ${renderInputField("PRIMÄRES ZIEL / EINSATZBESPRECHUNG [MANDATORISCH]", "objective", "ELIMINIERE FEINDLICHEN KOMMANDANTEN IN SEKTOR B. DATENSICHERUNG PRIORITÄT 1.", "text", true, true)}
+                        ${renderInputField("DETAILLIERTE MISSIONSDESKRIPTION", "description", "Hintergrundinformationen, Bedrohungsstufe, Geländeanalyse...", "text", false, true)}
+                        ${renderInputField("ERFORDERLICHE ASSETS (KOMMAGESEPARIERT)", "assets", "M4A1, UAV, 2X SANITÄTER, SPRENGSTOFFE", "text", false, true)}
+
+                        <div class="flex justify-between mt-6 pt-4 border-t border-gray-800">
+                            ${renderButton("ABBRECHEN", "ArrowLeft", "bg-gray-700 hover:bg-gray-600 border-gray-600 text-gray-300", false, 'returnToList')}
+                            <button type="submit" id="save-mission-button" class="px-4 py-2 rounded-sm font-semibold transition duration-200 font-mono text-sm tracking-wider flex items-center justify-center bg-green-700 hover:bg-green-600 text-white border border-green-500">
+                                ${getIconHtml(isEditing ? 'Save' : 'Save', 'w-4 h-4 mr-2')} ${isEditing ? 'ÄNDERUNGEN SPEICHERN' : 'MISSION SPEICHERN'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            `;
+            document.getElementById('mission-form').addEventListener('submit', handleSaveMission);
+            // Event Listener für alle Input/Select/Textarea-Felder hinzufügen, um currentMission zu aktualisieren
+            const fields = document.querySelectorAll('#mission-form input, #mission-form select, #mission-form textarea');
+            fields.forEach(field => field.addEventListener('input', (e) => {
+                // Stellen Sie sicher, dass currentMission existiert, bevor Sie versuchen, es zu aktualisieren
+                if (currentMission) {
+                    currentMission[e.target.name] = e.target.value;
+                }
+            }));
+            // Separate Listener für den Zurück-Button, da er kein Formular-Submit ist
+            document.querySelector('[data-action="returnToList"]').addEventListener('click', () => {
+                currentMission = initialMissionState;
+                renderList();
+            });
+        }
+
+        function renderList() {
+            const appDiv = document.getElementById('app');
+            const userPlatoonStyles = getPlatoonStyles(platoonRole);
+
+            // Missionen filtern und sortieren (nach neuestem Update)
+            let visibleMissions = missions.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+
+            // Sichtbarkeitsprüfung
+            if (!FULL_VISIBILITY_ROLES.includes(platoonRole)) {
+                visibleMissions = visibleMissions.filter(mission => 
+                    mission.assignedPlatoon === platoonRole || 
+                    mission.assignedPlatoon === 'GENERAL'
+                );
+            }
+
+            const missionCardsHtml = visibleMissions.length === 0 ? `
+                <div class="text-center p-8 bg-gray-900 rounded-sm border border-gray-800 text-gray-500 font-mono">
+                    <p class="mb-4">[FEHLER] KEINE ZUGEWIESENEN MISSIONEN GEFUNDEN.</p>
+                    ${renderButton("INITIIERE NEUE MISSION", "Plus", "mx-auto", false, 'newMission')}
+                </div>
+            ` : `
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="mission-cards-container">
+                    ${visibleMissions.map(mission => {
+                        const canManage = canEditOrDelete(mission);
+                        const missionStyles = getPlatoonStyles(mission.assignedPlatoon);
+                        const creatorStyles = getPlatoonStyles(mission.creatorPlatoon);
+                        const isLieutenantMission = LIEUTENANT_ROLES.includes(mission.creatorPlatoon);
+                        
+                        const ltBadge = isLieutenantMission ? `
+                            <div class="absolute top-0 right-0 m-2 px-2 py-0.5 bg-yellow-600 text-gray-900 text-xs font-bold rounded-sm flex items-center tracking-wider">
+                                ${getIconHtml('Star', 'w-3 h-3 mr-1')} LT. STATUS
+                            </div>
+                        ` : '';
+                        
+                        // Buttons für Bearbeitung/Löschung oder Leseberechtigung anzeigen
+                        const actionButtons = !canManage ? `
+                            <span class="text-sm text-gray-500 w-full text-center p-2 border border-gray-800 bg-gray-900 rounded-sm">NUR LESEN BERECHTIGUNG</span>
+                        ` : `
+                            ${renderButton("EDITIEREN", "Edit", "flex-1 bg-blue-700 hover:bg-blue-600 border-blue-500", false, 'editMission', mission.id)}
+                            <!-- Lösch-Button als Icon-Button -->
+                            <button data-action="deleteMission" data-id="${mission.id}" class="w-10 h-10 bg-red-700 hover:bg-red-600 border border-red-500 p-0 rounded-sm flex justify-center items-center transition duration-200">
+                                ${getIconHtml('Trash2', 'w-4 h-4 text-white')}
+                            </button>
+                        `;
+
+                        return `
+                            <div data-id="${mission.id}" class="mission-card p-5 rounded-sm shadow-lg transition duration-300 font-mono relative bg-gray-900 border border-gray-800 ${missionStyles.border} ${isLieutenantMission ? 'border-t-4 border-b-4 border-yellow-500/80 shadow-yellow-900/50' : ''}">
+                                ${ltBadge}
+                                <div class="mb-2">
+                                    <div class="flex justify-between items-start mb-2">
+                                        <h3 class="text-xl font-bold ${missionStyles.text} leading-tight pr-4 tracking-wider">${mission.title}</h3>
+                                        <span class="text-xs font-semibold px-2 py-0.5 rounded-sm uppercase tracking-wider whitespace-nowrap ${missionStyles.badge}">
+                                            ${getIconHtml('Users', 'w-3 h-3 inline mr-1 -mt-0.5')} ${mission.assignedPlatoon}
+                                        </span>
+                                    </div>
+                                    <div class="flex space-x-2 text-sm text-gray-400 mb-3 border-b border-gray-800 pb-2">
+                                        <span class="font-semibold text-gray-500">${mission.scenarioType}</span>
+                                        <span class="font-medium text-xs px-2 py-0.5 rounded-sm ${creatorStyles.badge}">ERSTELLER: ${mission.creatorPlatoon}</span>
+                                    </div>
+                                    
+                                    <p class="text-sm text-gray-500 mb-1 italic">[ZIEL]:</p>
+                                    <p class="text-md text-gray-300 mb-4 h-16 overflow-hidden">
+                                        ${mission.objective}
+                                    </p>
+                                </div>
+                                
+                                <div class="flex space-x-3 pt-3 border-t border-gray-800 mt-4">
+                                    ${actionButtons}
+                                </div>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            `;
+            
+            appDiv.innerHTML = `
+                <div class="p-6 bg-gray-950 min-h-full">
+                    <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 border-b pb-4 border-gray-800">
+                        ${renderHeader("AKTUELLE MISSIONEN [AKTIV]", "List")}
+                        <div class="flex space-x-3 items-center mt-3 md:mt-0">
+                            <span class="text-sm font-mono font-bold px-3 py-1 rounded-sm border ${userPlatoonStyles.badge}">
+                                ROLLE: ${platoonRole}
+                            </span>
+                            ${renderButton("LOGOUT", "LogOut", "bg-red-700 hover:bg-red-600 border-red-500", false, 'logout')}
+                        </div>
+                    </div>
+                    
+                    <div class="p-3 mb-6 rounded-sm bg-gray-900 border border-yellow-600/50 text-yellow-400 flex items-start font-mono text-sm">
+                        ${getIconHtml('CloudOff', 'w-5 h-5 mr-3 mt-0.5 flex-shrink-0 text-yellow-500')}
+                        <p class="font-medium">
+                            **WARNUNG:** LOKALE SPEICHERUNG AKTIV. KEINE NETZWERK-SYNCHRONISIERUNG.
+                        </p>
+                    </div>
+
+                    <div class="flex justify-end mb-6">
+                        ${renderButton("NEUE MISSION ERSTELLEN", "Plus", "", false, 'newMission')}
+                    </div>
+
+                    ${missionCardsHtml}
+
+                    <div class="mt-8 text-center text-xs text-gray-600 font-mono">
+                        SYSTEM-LOG: ${new Date().toLocaleString()} - END OF FILE.
+                    </div>
+                </div>
+            `;
+            
+            // Fügen Sie den Haupt-Event-Delegator hinzu
+            // Wir müssen sicherstellen, dass dieser nur einmal hinzugefügt wird
+            const existingListener = document.getElementById('app')._eventListener;
+            if (!existingListener) {
+                document.getElementById('app').addEventListener('click', handleAppClick);
+                document.getElementById('app')._eventListener = handleAppClick;
+            }
+        }
+
+        // --- HANDLER LOGIK ---
+
+        async function handleLogin(e) {
+            e.preventDefault();
+            const username = e.target.username.value;
+            const password = e.target.password.value;
+            const messageElement = document.getElementById('login-message');
+            const loginButton = document.getElementById('login-button');
+
+            const user = MOCK_ACCOUNTS[username];
+            messageElement.classList.remove('hidden');
+
+            if (user && user.password === password) {
+                
+                loginButton.innerHTML = `${getIconHtml('Loader2', 'w-4 h-4 mr-2 animate-spin')} AUTHENTIFIZIERE...`;
+                messageElement.className = 'p-3 mb-4 rounded-sm text-sm font-mono font-medium bg-green-900 text-green-300 border border-green-700';
+                messageElement.textContent = 'Login erfolgreich. Authentifiziere...';
+                
+                let uniqueId = 'local-' + crypto.randomUUID();
+                
+                // Versuche, Firebase für eine eindeutige ID zu verwenden
+                if (window.firebase && Object.keys(firebaseConfig).length > 0 && typeof window.firebase.initializeApp === 'function') {
+                    try {
+                        const app = window.firebase.initializeApp(firebaseConfig);
+                        auth = window.firebase.getAuth(app);
+                        const authResult = await window.firebase.signInAnonymously(auth);
+                        uniqueId = authResult.user.uid; 
+                    } catch (error) {
+                        console.warn("Firebase-Anmeldung fehlgeschlagen, verwende UUID.", error);
+                        messageElement.textContent = 'WARNUNG: Firebase-FEHLER. Verwende lokale ID.';
+                    }
+                } else {
+                    // Firebase nicht verfügbar (echte Standalone-App) oder nicht konfiguriert
+                    console.log("Verwende zufällige lokale ID (Firebase nicht konfiguriert/verfügbar).");
+                }
+
+                platoonRole = user.platoon;
+                userId = uniqueId;
+                isAuthReady = true;
+                
+                setTimeout(() => {
+                    missions = loadMissionsFromLocal();
+                    view = 'list';
+                    renderApp();
+                }, 1000); 
+
+            } else {
+                messageElement.className = 'p-3 mb-4 rounded-sm text-sm font-mono font-medium bg-red-900 text-red-300 border border-red-700';
+                messageElement.textContent = 'FEHLER: Ungültiger Benutzername oder Passwort.';
+                loginButton.innerHTML = `${getIconHtml('LogIn', 'w-4 h-4 mr-2')} LOGIN BESTÄTIGEN`;
+            }
+        }
+
+        function handleAppClick(e) {
+            // Event-Delegation, um Klicks auf die Buttons zu verarbeiten
+            const target = e.target.closest('[data-action]');
+            if (!target) return;
+            
+            const action = target.dataset.action;
+            const id = target.dataset.id;
+            
+            switch (action) {
+                case 'logout':
+                    handleLogout();
+                    break;
+                case 'newMission':
+                    // Setzt die Mission auf den Ausgangszustand zurück
+                    currentMission = { ...initialMissionState };
+                    view = 'creator';
+                    renderApp();
+                    break;
+                case 'editMission':
+                    // Findet die zu bearbeitende Mission und kopiert sie in den currentMission State
+                    const missionToEdit = missions.find(m => m.id === id);
+                    if (missionToEdit) {
+                        currentMission = { ...missionToEdit };
+                        view = 'creator';
+                        renderApp();
+                    }
+                    break;
+                case 'deleteMission':
+                    const missionToDelete = missions.find(m => m.id === id);
+                    if (missionToDelete) {
+                        deleteMission(missionToDelete);
+                    }
+                    break;
+                case 'returnToList':
+                    // Setzt den State zurück und geht zur Listenansicht
+                    currentMission = initialMissionState;
+                    renderList();
+                    break;
+                default:
+                    // Andere Aktionen, die keine IDs benötigen, können hier landen
+                    break;
+            }
+        }
+
+        async function handleLogout() {
+            // Versuch, sich von Firebase abzumelden (falls Firebase verwendet wurde)
+            if (auth && typeof window.firebase.signOut === 'function') {
+                try {
+                    await window.firebase.signOut(auth);
+                } catch (e) {
+                    console.error("Fehler beim Abmelden:", e);
+                }
+            }
+            // Zurücksetzen des lokalen Status
+            userId = null;
+            platoonRole = null;
+            isAuthReady = false;
+            view = 'login';
+            renderApp();
+        }
+
+        function deleteMission(mission) {
+            // Verwendet eine benutzerdefinierte Ersatzfunktion für alert()/confirm()
+            const confirmation = prompt(`[WARNUNG] Bestätigen Sie die Löschung von "${mission.title}". Geben Sie 'LÖSCHEN' ein:`);
+            if (confirmation === 'LÖSCHEN') { 
+                missions = missions.filter(m => m.id !== mission.id);
+                saveMissionsToLocal(missions);
+                console.log(`[STATUS] Mission "${mission.title}" lokal gelöscht.`);
+                renderList();
+            }
+        }
+
+        function handleSaveMission(e) {
+            e.preventDefault();
+            const messageElement = document.getElementById('creator-message');
+            const saveButton = document.getElementById('save-mission-button');
+
+            if (!currentMission.title || !currentMission.objective) {
+                messageElement.className = 'p-3 mb-4 rounded-sm text-sm font-mono font-medium bg-red-900 text-red-300 border border-red-700';
+                messageElement.textContent = 'FEHLER: Missions-Titel und Primärziel erforderlich.';
+                messageElement.classList.remove('hidden');
+                return;
+            }
+            
+            // Logik zur Berechtigungsprüfung
+            if (!canAssignTo(platoonRole, currentMission.assignedPlatoon)) {
+                messageElement.className = 'p-3 mb-4 rounded-sm text-sm font-mono font-medium bg-red-900 text-red-300 border border-red-700';
+                messageElement.textContent = `FEHLER: Trupp ${platoonRole} ist nicht berechtigt, Missionen für ${currentMission.assignedPlatoon} zu erstellen.`;
+                messageElement.classList.remove('hidden');
+                return;
+            }
+
+            const isEditing = currentMission.id !== undefined;
+            
+            // Speichervorgang visuell anzeigen
+            saveButton.disabled = true;
+            saveButton.innerHTML = `${getIconHtml('Loader2', 'w-4 h-4 mr-2 animate-spin')} DATENÜBERTRAGUNG...`;
+
+            // Erstellt das Datenobjekt, das gespeichert werden soll
+            const dataToSave = {
+                ...currentMission,
+                creatorId: userId, 
+                creatorPlatoon: platoonRole,
+                createdAt: currentMission.createdAt || Date.now(),
+                updatedAt: Date.now(),
+            };
+            
+            // Logik zum Hinzufügen vs. Aktualisieren
+            if (isEditing) {
+                missions = missions.map(m => m.id === dataToSave.id ? dataToSave : m);
+                messageElement.textContent = `STATUS: Mission "${dataToSave.title}" AKTUALISIERT.`;
+            } else {
+                // Generiert eine eindeutige lokale ID für neue Missionen
+                const newId = 'mission-' + Date.now() + Math.random().toString(36).substr(2, 9);
+                missions.push({ ...dataToSave, id: newId });
+                messageElement.textContent = `STATUS: Mission "${dataToSave.title}" GESPEICHERT.`;
+            }
+
+            saveMissionsToLocal(missions);
+            
+            messageElement.className = 'p-3 mb-4 rounded-sm text-sm font-mono font-medium bg-green-900 text-green-300 border border-green-700';
+            messageElement.classList.remove('hidden');
+            
+            // Nach kurzer Verzögerung zur Liste zurückkehren
+            setTimeout(() => {
+                currentMission = initialMissionState;
+                view = 'list';
+                renderApp();
+            }, 1500);
+        }
+
+        // --- HAUPT-RENDER-FUNKTION ---
+
+        function renderApp() {
+            // Alte Listener auf dem 'app'-Div entfernen, um Duplikate zu vermeiden.
+            // Der Listener für handleAppClick wird in renderList() wieder hinzugefügt.
+            const appDiv = document.getElementById('app');
+            if (appDiv._eventListener) {
+                appDiv.removeEventListener('click', appDiv._eventListener);
+                appDiv._eventListener = null;
+            }
+
+            switch (view) {
+                case 'login':
+                    renderLogin();
+                    break;
+                case 'list':
+                    renderList();
+                    break;
+                case 'creator':
+                    renderCreator();
+                    break;
+                case 'loading':
+                default:
+                    renderLoading();
+                    break;
+            }
+        }
+        
+        // --- STARTPUNKT ---
+        
+        // Warte, bis die Icons und Firebase-Module (die als globale Variablen in window.icons/window.firebase landen) geladen sind
+        window.onload = () => {
+             // Da die Module asynchron geladen werden (type="module"), warten wir kurz
+            setTimeout(() => {
+                view = 'login';
+                renderApp();
+            }, 500); 
+        };
+
+    </script>
+</body>
+</html>
